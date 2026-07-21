@@ -58,6 +58,46 @@ def _target_upside_pct(price: float | None, target: float | None) -> float | Non
     return ((target - price) / price) * 100
 
 
+def _compute_signal(
+    price: float | None,
+    target_pct: float | None,
+    rsi: float | None,
+    ma50: float | None,
+    ma100: float | None,
+    ma200: float | None,
+) -> str:
+    target_green = pd.notna(target_pct) and target_pct >= 0
+    target_red = pd.notna(target_pct) and target_pct < 0
+    rsi_green = pd.notna(rsi) and rsi <= 30
+    rsi_orange = pd.notna(rsi) and rsi >= 70
+
+    def ma_green(ma: float | None) -> bool:
+        return pd.notna(price) and pd.notna(ma) and price < ma
+
+    def ma_orange(ma: float | None) -> bool:
+        return pd.notna(price) and pd.notna(ma) and price > ma
+
+    if (
+        target_green
+        and rsi_green
+        and ma_green(ma50)
+        and ma_green(ma100)
+        and ma_green(ma200)
+    ):
+        return "Buy"
+
+    if (
+        target_red
+        and rsi_orange
+        and ma_orange(ma50)
+        and ma_orange(ma100)
+        and ma_orange(ma200)
+    ):
+        return "Sell"
+
+    return "Hold"
+
+
 def _sparkline_svg(prices: list[float], width: int = 130, height: int = 36) -> str:
     if len(prices) < 2:
         return ""
@@ -115,30 +155,37 @@ def fetch_stock_metrics(tickers: list[str] | None = None) -> pd.DataFrame:
             if price is not None and prev_close:
                 change_pct = ((price - prev_close) / prev_close) * 100
 
+            ma50 = _moving_average(history, 50)
+            ma100 = _moving_average(history, 100)
+            ma200 = _moving_average(history, 200)
+            rsi = _rsi(history, 14)
+            target_pct = _target_upside_pct(price, avg_target)
+
             row.update(
                 {
                     "Price": price,
                     "Avg Target": avg_target,
-                    "Target %": _target_upside_pct(price, avg_target),
+                    "Target %": target_pct,
                     "Chart": _chart_image_uri(closes),
                     "Change %": change_pct,
                     "Volume": info.get("volume") or info.get("regularMarketVolume"),
                     "Avg Volume": info.get("averageVolume")
                     or info.get("averageDailyVolume3Month"),
-                    "MA 50": _moving_average(history, 50),
-                    "MA 100": _moving_average(history, 100),
-                    "MA 200": _moving_average(history, 200),
-                    "RSI": _rsi(history, 14),
+                    "MA 50": ma50,
+                    "MA 100": ma100,
+                    "MA 200": ma200,
+                    "RSI": rsi,
                     "52W High": info.get("fiftyTwoWeekHigh"),
                     "52W Low": info.get("fiftyTwoWeekLow"),
                     "P/E": info.get("trailingPE"),
                     "Fwd P/E": info.get("forwardPE"),
                     "EPS": info.get("trailingEps"),
-                    "Status": "OK",
+                    "Signal": _compute_signal(price, target_pct, rsi, ma50, ma100, ma200),
+                    "_load_error": None,
                 }
             )
         except Exception as exc:
-            row.update({"Chart": "", "Status": f"Error: {exc}"})
+            row.update({"Chart": "", "Signal": "—", "_load_error": str(exc)})
 
         rows.append(row)
 
@@ -160,6 +207,7 @@ def fetch_stock_metrics(tickers: list[str] | None = None) -> pd.DataFrame:
         "P/E": lambda v: f"{v:.2f}" if pd.notna(v) else "—",
         "Fwd P/E": lambda v: f"{v:.2f}" if pd.notna(v) else "—",
         "EPS": lambda v: f"${v:,.2f}" if pd.notna(v) else "—",
+        "Signal": lambda v: v if pd.notna(v) and str(v).strip() else "—",
     }
 
     for col, formatter in display_cols.items():

@@ -29,10 +29,10 @@ DISPLAY_COLUMNS = [
     "P/E (display)",
     "Fwd P/E (display)",
     "EPS (display)",
-    "Status",
+    "Signal (display)",
 ]
 
-METRICS_SCHEMA_VERSION = 8
+METRICS_SCHEMA_VERSION = 10
 
 
 @st.cache_data(ttl=300)
@@ -70,6 +70,14 @@ def _price_vs_ma_class(price, ma_value) -> str | None:
         return "rsi-low"
     if price > ma_value:
         return "rsi-high"
+    return None
+
+
+def _signal_class(signal: str) -> str | None:
+    if signal == "Buy":
+        return "change-up"
+    if signal == "Sell":
+        return "change-down"
     return None
 
 
@@ -140,6 +148,10 @@ def render_html_table(display_df: pd.DataFrame, raw_df: pd.DataFrame) -> None:
                 ma_class = _price_vs_ma_class(price, raw_df.loc[idx, col])
                 if ma_class:
                     classes.append(ma_class)
+            elif col == "Signal":
+                sig_class = _signal_class("" if pd.isna(value) else str(value))
+                if sig_class:
+                    classes.append(sig_class)
 
             class_attr = f" class=\"{' '.join(classes)}\"" if classes else ""
 
@@ -375,11 +387,11 @@ with st.spinner("Fetching stock data..."):
         tuple(watchlist),
     )
 
-errors = df[df["Status"] != "OK"]
+errors = df[df["_load_error"].notna()]
 if not errors.empty:
     st.warning(
         "Some tickers could not be loaded: "
-        + ", ".join(f"{r.Ticker} ({r.Status})" for _, r in errors.iterrows())
+        + ", ".join(f"{r.Ticker} ({r._load_error})" for _, r in errors.iterrows())
     )
 
 display_df = to_display_df(df)
@@ -389,5 +401,6 @@ render_add_ticker_row()
 
 st.caption(
     "200D charts show the last 200 trading days. Target % is upside to avg analyst target. "
+    "Signal: Buy = green Target %, RSI, and all MAs; Sell = opposite; otherwise Hold. "
     "RSI >70 overbought, <30 oversold. MA columns: green = price below, orange = price above."
 )
