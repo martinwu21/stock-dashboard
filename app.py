@@ -1,6 +1,7 @@
 from datetime import datetime
 from html import escape
 import importlib
+import json
 
 import pandas as pd
 import streamlit as st
@@ -32,7 +33,32 @@ DISPLAY_COLUMNS = [
     "Signal (display)",
 ]
 
-METRICS_SCHEMA_VERSION = 10
+METRICS_SCHEMA_VERSION = 11
+
+COLUMN_DEFINITIONS = {
+    "Ticker": "Stock symbol on Yahoo Finance. Use the left handle to drag and reorder rows.",
+    "Price": "Latest market price from Yahoo Finance.",
+    "Avg Target": "Average analyst price target (mean or median).",
+    "Target %": "Upside to the avg target: (target − price) / price. Green = positive upside, red = trading above target.",
+    "RSI": "14-day Relative Strength Index (momentum). Green ≤ 30 = oversold, orange ≥ 70 = overbought.",
+    "200D": "Sparkline of the last 200 trading days. Green line = price up over the period, red = down.",
+    "Change %": "Daily change versus the previous close. Green = up, red = down.",
+    "Volume": "Today's trading volume, shown in millions of shares.",
+    "Avg Volume": "Average daily volume over about 3 months, in millions of shares.",
+    "MA 50": "50-day moving average of the close. Green = price below MA, orange = price above MA.",
+    "MA 100": "100-day moving average of the close. Green = price below MA, orange = price above MA.",
+    "MA 200": "200-day moving average of the close. Green = price below MA, orange = price above MA.",
+    "52W High": "Highest traded price over the last 52 weeks.",
+    "52W Low": "Lowest traded price over the last 52 weeks.",
+    "P/E": "Trailing price-to-earnings ratio (price divided by past earnings).",
+    "Fwd P/E": "Forward price-to-earnings ratio (price divided by expected earnings).",
+    "EPS": "Trailing earnings per share.",
+    "Signal": (
+        "Buy / Hold / Sell score from Target %, RSI, and MA 50/100/200 "
+        "(+1 bullish, −1 bearish each). Buy if net score ≥ 2 with 2+ bullish signals; "
+        "Sell if net score ≤ −2 with 2+ bearish; otherwise Hold."
+    ),
+}
 
 
 @st.cache_data(ttl=300)
@@ -81,6 +107,21 @@ def _signal_class(signal: str) -> str | None:
     return None
 
 
+def _header_cell(label: str, *, frozen: bool = False) -> str:
+    definition = COLUMN_DEFINITIONS.get(label, "")
+    frozen_class = " frozen-col" if frozen else ""
+    if not definition:
+        return f"<th class='{frozen_class.strip()}'>{escape(label)}</th>"
+
+    escaped_definition = escape(definition, quote=True)
+    return (
+        f"<th class='col-help{frozen_class}' "
+        f'data-definition="{escaped_definition}" '
+        f'title="{escaped_definition}">'
+        f"{escape(label)}</th>"
+    )
+
+
 def handle_watchlist_order_param() -> None:
     order_param = st.query_params.get("watchlist_order")
     if not order_param:
@@ -104,11 +145,13 @@ def handle_watchlist_order_param() -> None:
 
 
 def render_html_table(display_df: pd.DataFrame, raw_df: pd.DataFrame) -> None:
-    headers = ["<th class='frozen-col drag-col' aria-label='Reorder'></th>"]
+    headers = [
+        "<th class='frozen-col drag-col' title='Drag rows to reorder your watchlist' "
+        "aria-label='Reorder'></th>"
+    ]
     for col in display_df.columns:
         label = "200D" if col == "Chart" else col
-        frozen = " frozen-col" if col == "Ticker" else ""
-        headers.append(f"<th class='{frozen.strip()}'>{escape(label)}</th>")
+        headers.append(_header_cell(label, frozen=(col == "Ticker")))
 
     rows = []
     for idx, row in display_df.iterrows():
@@ -167,7 +210,8 @@ def render_html_table(display_df: pd.DataFrame, raw_df: pd.DataFrame) -> None:
 
         rows.append(f"<tr data-ticker=\"{escape(ticker)}\">{''.join(cells)}</tr>")
 
-    table_height = max(220, 44 * (len(display_df) + 1))
+    table_height = max(250, 44 * (len(display_df) + 1) + 36)
+    default_definition = "Hover or click a column title to see what it means."
     table_html = f"""
 <!DOCTYPE html>
 <html>
@@ -212,6 +256,30 @@ def render_html_table(display_df: pd.DataFrame, raw_df: pd.DataFrame) -> None:
       background-color: rgb(38, 39, 48);
       color: #fafafa;
       font-weight: 600;
+    }}
+    .stock-table th.col-help {{
+      cursor: help;
+    }}
+    .stock-table th.col-help:hover {{
+      background-color: rgb(48, 49, 58);
+    }}
+    .stock-table th.col-help.is-active {{
+      background-color: rgb(55, 56, 68);
+      box-shadow: inset 0 -2px 0 #3b82f6;
+    }}
+    .definition-bar {{
+      padding: 0.45rem 0.85rem;
+      font-size: 0.8rem;
+      line-height: 1.35;
+      color: #d1d5db;
+      background-color: rgb(24, 27, 36);
+      border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+      min-height: 2rem;
+    }}
+    .definition-bar.is-pinned {{
+      color: #fafafa;
+      background-color: rgb(30, 41, 59);
+      border-bottom-color: rgba(59, 130, 246, 0.45);
     }}
     .stock-table .frozen-col {{
       position: sticky;
@@ -267,12 +335,60 @@ def render_html_table(display_df: pd.DataFrame, raw_df: pd.DataFrame) -> None:
 </head>
 <body>
   <div class="stock-table-wrap">
+    <div id="definition-bar" class="definition-bar">{escape(default_definition)}</div>
     <table class="stock-table">
       <thead><tr>{''.join(headers)}</tr></thead>
       <tbody id="stock-tbody">{''.join(rows)}</tbody>
     </table>
   </div>
   <script>
+    const definitionBar = document.getElementById("definition-bar");
+    const defaultDefinition = {json.dumps(default_definition)};
+    let pinnedHeader = null;
+
+    function setDefinition(text, pinned) {{
+      definitionBar.textContent = text;
+      definitionBar.classList.toggle("is-pinned", pinned);
+    }}
+
+    function clearPinnedHeader() {{
+      if (!pinnedHeader) {{
+        return;
+      }}
+      pinnedHeader.classList.remove("is-active");
+      pinnedHeader = null;
+      setDefinition(defaultDefinition, false);
+    }}
+
+    document.querySelectorAll("th.col-help").forEach((header) => {{
+      const definition = header.dataset.definition;
+      header.addEventListener("mouseenter", () => {{
+        if (!pinnedHeader) {{
+          setDefinition(definition, false);
+        }}
+      }});
+      header.addEventListener("mouseleave", () => {{
+        if (!pinnedHeader) {{
+          setDefinition(defaultDefinition, false);
+        }}
+      }});
+      header.addEventListener("click", (event) => {{
+        event.stopPropagation();
+        if (pinnedHeader === header) {{
+          clearPinnedHeader();
+          return;
+        }}
+        if (pinnedHeader) {{
+          pinnedHeader.classList.remove("is-active");
+        }}
+        pinnedHeader = header;
+        header.classList.add("is-active");
+        setDefinition(definition, true);
+      }});
+    }});
+
+    document.addEventListener("click", clearPinnedHeader);
+
     const tbody = document.getElementById("stock-tbody");
     if (tbody && typeof Sortable !== "undefined") {{
       new Sortable(tbody, {{
@@ -400,7 +516,7 @@ render_html_table(display_df, df)
 render_add_ticker_row()
 
 st.caption(
-    "200D charts show the last 200 trading days. Target % is upside to avg analyst target. "
-    "Signal: Buy = green Target %, RSI, and all MAs; Sell = opposite; otherwise Hold. "
-    "RSI >70 overbought, <30 oversold. MA columns: green = price below, orange = price above."
+    "Hover or click column titles in the table for definitions. "
+    "Signal scores Target %, RSI, and the 3 MAs (+1 bullish, -1 bearish each): "
+    "Buy if net score >= 2 with 2+ bullish signals; Sell if net score <= -2 with 2+ bearish; else Hold."
 )

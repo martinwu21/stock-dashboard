@@ -58,6 +58,32 @@ def _target_upside_pct(price: float | None, target: float | None) -> float | Non
     return ((target - price) / price) * 100
 
 
+def _metric_score_target_pct(target_pct: float | None) -> int:
+    if pd.isna(target_pct):
+        return 0
+    return 1 if target_pct >= 0 else -1
+
+
+def _metric_score_rsi(rsi: float | None) -> int:
+    if pd.isna(rsi):
+        return 0
+    if rsi <= 30:
+        return 1
+    if rsi >= 70:
+        return -1
+    return 0
+
+
+def _metric_score_ma(price: float | None, ma: float | None) -> int:
+    if pd.isna(price) or pd.isna(ma):
+        return 0
+    if price < ma:
+        return 1
+    if price > ma:
+        return -1
+    return 0
+
+
 def _compute_signal(
     price: float | None,
     target_pct: float | None,
@@ -66,35 +92,21 @@ def _compute_signal(
     ma100: float | None,
     ma200: float | None,
 ) -> str:
-    target_green = pd.notna(target_pct) and target_pct >= 0
-    target_red = pd.notna(target_pct) and target_pct < 0
-    rsi_green = pd.notna(rsi) and rsi <= 30
-    rsi_orange = pd.notna(rsi) and rsi >= 70
+    scores = [
+        _metric_score_target_pct(target_pct),
+        _metric_score_rsi(rsi),
+        _metric_score_ma(price, ma50),
+        _metric_score_ma(price, ma100),
+        _metric_score_ma(price, ma200),
+    ]
+    total = sum(scores)
+    bullish = sum(1 for score in scores if score > 0)
+    bearish = sum(1 for score in scores if score < 0)
 
-    def ma_green(ma: float | None) -> bool:
-        return pd.notna(price) and pd.notna(ma) and price < ma
-
-    def ma_orange(ma: float | None) -> bool:
-        return pd.notna(price) and pd.notna(ma) and price > ma
-
-    if (
-        target_green
-        and rsi_green
-        and ma_green(ma50)
-        and ma_green(ma100)
-        and ma_green(ma200)
-    ):
+    if total >= 2 and bullish >= 2 and bullish > bearish:
         return "Buy"
-
-    if (
-        target_red
-        and rsi_orange
-        and ma_orange(ma50)
-        and ma_orange(ma100)
-        and ma_orange(ma200)
-    ):
+    if total <= -2 and bearish >= 2 and bearish > bullish:
         return "Sell"
-
     return "Hold"
 
 
